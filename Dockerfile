@@ -22,3 +22,6 @@ EXPOSE 53/udp
 COPY startup.sh /startup.sh
 
 CMD /startup.sh
+
+RUN apk dhclient --no-cache bind && \
+        ln -s /usr/sbin/dhclient /sbin/dhclient

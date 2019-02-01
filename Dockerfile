@@ -23,5 +23,5 @@ COPY startup.sh /startup.sh
 
 CMD /startup.sh
 
-RUN apk dhclient --no-cache bind && \
+RUN apk add --no-cache dhclient && \
         ln -s /usr/sbin/dhclient /sbin/dhclient

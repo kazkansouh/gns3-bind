@@ -17,9 +17,8 @@
 
 ## Create main config file
 CONF_FILE=/etc/bind/named.conf
-if test "${RECURSIVE}" = "yes" ; then
-    echo "Enabling recursion onto Google DNS"
-    cat - > ${CONF_FILE} <<EOF
+
+cat - > ${CONF_FILE} <<EOF
 options {
         directory "/var/bind";
         listen-on { any; };
@@ -31,42 +30,73 @@ options {
         pid-file "/var/run/named/named.pid";
 
         allow-recursion { 0.0.0.0/0; };
+EOF
+
+case "${AUTHORITATIVE:-self}" in
+    iana,*)
+        FORWARDER=${AUTHORITATIVE#iana,}
+        echo "Using IANA as authoritative root with upstream as ${FORWARDER}"
+        cat - >> ${CONF_FILE} <<EOF
         forwarders {
-              8.8.8.8;
-              8.8.4.4;
+              ${FORWARDER};
         };
 };
-
-zone "private" IN {
-        type master;
-        file "zones/private.zone";
+zone "." IN {
+        type hint;
+        file "named.ca";
 };
 EOF
-else
-    echo "DNS recursion not enabled, enable by setting env. var RECURSIVE=yes"
-    cat - > ${CONF_FILE} <<EOF
-options {
-        directory "/var/bind";
-        listen-on { any; };
-        listen-on-v6 { any; };
-        allow-transfer {
-                none;
+    ;;
+    self)
+        echo "Assuming authoritative role for root"
+        echo '};' >> ${CONF_FILE}
+        # Define root domain (.), so that server is authoritative
+        if test -z "${DOMAIN__}" ; then
+            DOMAIN__=
+        fi
+    ;;
+    *,A,*,* | *,AAAA,*,*)
+        ROOT_NAME=${AUTHORITATIVE%%,*}
+        FORWARDER=${AUTHORITATIVE##*,}
+        AUTHORITATIVE=${AUTHORITATIVE%,*}
+        echo "Setting authoritative root to \"${ROOT_NAME}\" with upstream as ${FORWARDER}"
+        cat - >> ${CONF_FILE} <<EOF
+        forwarders {
+              ${FORWARDER};
         };
-
-        pid-file "/var/run/named/named.pid";
-
-        allow-recursion { none; };
-        recursion no;
 };
-
-zone "private" IN {
-        type master;
-        file "zones/private.zone";
+zone "." IN {
+        type hint;
+        file "custom.ca";
 };
 EOF
-fi
+        cat - >> /var/bind/custom.ca <<EOF
+$(echo -en '.\tNS\t')${ROOT_NAME}.
+$(echo ${AUTHORITATIVE} | awk 'BEGIN {RS=" "; FS=","; OFS="\t"} {print $1 ".",$2,$3}')
+EOF
+    ;;
+    *)
+        1>&2 echo "AUTHORITATIVE should be one of:"
+        1>&2 echo " * iana,forwarder"
+        1>&2 echo " * self"
+        1>&2 echo " * fqdn,A,ipv4addr,forwarder"
+        1>&2 echo " * fqdn,AAAA,ipv6addr,forwarder"
+        1>&2 echo
+        1>&2 echo "Where:"
+        1>&2 echo " * fqdn is the name of the authoritative server for root."
+        1>&2 echo " * forwarder is the address of a dns server to pass"
+        1>&2 echo "   unresolved recursive queries to."
+        1>&2 echo
+        1>&2 echo "Example:"
+        1>&2 echo "  Set to iana,8.8.8.8 to forward queries not answerable"
+        1>&2 echo "  locally to Google's dns."
+        1>&2 echo
+        1>&2 echo "Dropping into a shell"
+        exec /bin/sh
+    ;;
+esac
 
-## Setup private zone
+## Setup self referencing resource records
 
 # Find ip addresses to advertise as the ns authority in all domains
 # that it masters.
@@ -75,10 +105,47 @@ if test -z "${INTERFACE}" ; then
 fi
 IPv4=$(ip -4 addr show dev ${INTERFACE} up | awk '/ inet /{split($2,a,"/"); print a[1];}')
 IPv6=$(ip -6 addr show dev ${INTERFACE} up | awk '/ inet6 ([^fF]|[fF][^eE]|[fF][eE][^8]|[fF][eE]8[^0])/{split($2,a,"/"); print a[1];}')
-echo "Using ip addresses as nameserver root:"
+echo "Detected the following ip addresses on ${INTERFACE}:"
 for a in ${IPv4} ${IPv6} ; do
-    echo ${a}
+    echo "  ${a}"
 done
+echo "They will be used for NS records in master zones."
+
+SELF_ADDRESS_RR=$(
+    for a in ${IPv4} ; do
+        echo -e "ns\tA\t${a}"
+    done
+    for a in ${IPv6} ; do
+        echo -e "ns\tAAAA\t${a}"
+    done
+               )
+## Setup a zone for each domain
+
+DOMAINS=$(set | grep -o ^DOMAIN_[^=]\\\+ | sed s/DOMAIN_//)
+
+if test -z "${DOMAINS}" ; then
+    1>&2 echo "No domains found to add to DNS server."
+    1>&2 echo
+    1>&2 echo "Configure each domain by setting env variable:"
+    1>&2 echo "    DOMAIN_name=(owner,rr,rdata )+"
+    1>&2 echo
+    1>&2 echo "Here, name is the domain name (underscore is mapped to dot)."
+    1>&2 echo "  owner is the owner of the resource record."
+    1>&2 echo "  rr is the type of the resource record."
+    1>&2 echo "  rdata is the data of the resource record."
+    1>&2 echo
+    1>&2 echo "These three values can be repeated many times, each separated"
+    1>&2 echo "by a space to fully define the records stored in the zone."
+    1>&2 echo "For more info about owner, rr and rdata see the bind manual."
+    1>&2 echo
+    1>&2 echo "Example:"
+    1>&2 echo "  DOMAIN_test=\"@,A,192.168.1.1 @,AAAA,fd11::1 www,A,192.168.1.2 www,AAAA,fd00::5\""
+    1>&2 echo "  \"test\" will resolve to 192.168.1.1 (and fd11::1)"
+    1>&2 echo "  \"www.test\" will resolve to 192.168.1.2 (and fd00::5)"
+    1>&2 echo
+    1>&2 echo "Dropping into a shell"
+    exec /bin/sh
+fi
 
 ZONEDIR=/var/bind/zones
 if ! mkdir ${ZONEDIR} ; then
@@ -86,71 +153,43 @@ if ! mkdir ${ZONEDIR} ; then
     exit 1
 fi
 
-PRIVATE_ZONE=${ZONEDIR}/private.zone
-cat - > ${PRIVATE_ZONE} <<EOF
-\$TTL 1W
-@       SOA     nameserver root (
-                                      1          ; Serial
-                                      28800      ; Refresh
-                                      14400      ; Retry
-                                      604800     ; Expire - 1 week
-                                      86400 )    ; Minimum
-@       NS      nameserver
-EOF
-for a in ${IPv4} ; do
-    echo -e "nameserver\tA\t${a}" >> ${PRIVATE_ZONE}
-done
-for a in ${IPv6} ; do
-    echo -e "nameserver\tAAAA\t${a}" >> ${PRIVATE_ZONE}
-done
-
-## Setup a zone for each domain
-
-DOMAINS=$(set | grep -o ^DOMAIN_[^=]\\\+ | sed s/DOMAIN_//)
-
-if test -z "${DOMAINS}" ; then
-    2>&1 echo "No domains found to add to DNS server."
-    2>&1 echo 
-    2>&1 echo "Configure each domain by setting env variable:"
-    2>&1 echo "    DOMAIN_name=(owner,rr,rdata )+"
-    2>&1 echo
-    2>&1 echo "Here, name is the domain name."
-    2>&1 echo "  owner is the owner of the resource record."
-    2>&1 echo "  rr is the type of the resource record."
-    2>&1 echo "  rdata is the data of the resource record."
-    2>&1 echo
-    2>&1 echo "These three values can be repeated many times, each separated"
-    2>&1 echo "by a space to fully define the records stored in the zone."
-    2>&1 echo "For more info about owner, rr and rdata see the bind manual."
-    2>&1 echo
-    2>&1 echo "Example:"
-    2>&1 echo "  DOMAIN_test=\"@,A,192.168.1.1 @,AAAA,fd11::1 www,A,192.168.1.2 www,AAAA,fd00::5\""
-    2>&1 echo "  \"test\" will resolve to 192.168.1.1 (and fd11::1)"
-    2>&1 echo "  \"www.test\" will resolve to 192.168.1.2 (and fd00::5)"
-    2>&1 echo
-    2>&1 echo "Dropping into a shell"
-    exec /bin/sh
-fi
-
 for D in ${DOMAINS} ; do
     eval records=\$DOMAIN_$D
-    echo "Processing domain $D with value ${records}"
+    D=$(echo -n $D | tr _ \.)
+    echo "Processing domain \"${D}\" with value ${records}"
     D_ZONE=${ZONEDIR}/$D.zone
-    cat - > ${D_ZONE} <<EOF
+
+    # Check if custom ns record is provided
+    if echo ${records} | grep -E '( +|^)@ *, *NS *, *ns( +|$)' ; then
+        NS=$(echo ${records} | sed -E 's/^.*@ *, *NS *, *([^ ]+).*$/\1/')
+        cat - > ${D_ZONE} <<EOF
 \$TTL 1W
-@       SOA     nameserver.private. root (
+@       SOA     ${NS} root (
                                       1          ; Serial
                                       28800      ; Refresh
                                       14400      ; Retry
                                       604800     ; Expire - 1 week
                                       86400 )    ; Minimum
-@       NS      nameserver.private.
 EOF
+    else
+        cat - > ${D_ZONE} <<EOF
+\$TTL 1W
+@       SOA     ns root (
+                                      1          ; Serial
+                                      28800      ; Refresh
+                                      14400      ; Retry
+                                      604800     ; Expire - 1 week
+                                      86400 )    ; Minimum
+@       NS      ns
+${SELF_ADDRESS_RR}
+EOF
+    fi
     echo ${records} | awk 'BEGIN {RS=" "; FS=","; OFS="\t"} {print $1,$2,$3}' >> ${D_ZONE}
     cat - >> ${CONF_FILE} <<EOF
 zone "${D}" IN {
         type master;
         file "zones/${D}.zone";
+        forwarders { };
 };
 EOF
 done

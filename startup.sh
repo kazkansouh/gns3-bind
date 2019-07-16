@@ -26,6 +26,8 @@ options {
         allow-transfer {
                 none;
         };
+        dnssec-enable no;
+        dnssec-validation no;
 
         pid-file "/var/run/named/named.pid";
 

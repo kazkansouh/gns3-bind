@@ -148,7 +148,7 @@ if test -z "${DOMAINS}" ; then
 fi
 
 ZONEDIR=/var/bind/zones
-if ! mkdir ${ZONEDIR} ; then
+if ! mkdir -p ${ZONEDIR} ; then
     1>&2 echo "Failed to make dir ${ZONEDIR}"
     exit 1
 fi

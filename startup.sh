@@ -162,7 +162,7 @@ for D in ${DOMAINS} ; do
     D_ZONE=${ZONEDIR}/$D.zone
 
     # Check if custom ns record is provided
-    if echo ${records} | grep -E '( +|^)@ *, *NS *, *ns( +|$)' ; then
+    if echo ${records} | grep -E '( +|^)@ *, *NS *, *[^ ]+( +|$)' ; then
         NS=$(echo ${records} | sed -E 's/^.*@ *, *NS *, *([^ ]+).*$/\1/')
         cat - > ${D_ZONE} <<EOF
 \$TTL 1W

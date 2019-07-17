@@ -16,6 +16,8 @@ In addition, bind will listen for IPv4 and IPv6 DNS requests.
 
 ## Environment Variables
 
+Skip to [specifying domains](#domain-specification).
+
 ### Root Authority
 
 It is recommended to configure the authoritative dns server for the
@@ -82,7 +84,9 @@ In this configuration, `AUTHORITATIVE` takes 4 parameters.
 1. root nameserver FQDN
 2. `A` (ipv4) or `AAAA` (ipv6) to define 3rd parameter format
 3. IP address of root server (added as hint/glue on local server)
-4. IP address to forward requests to that cant be answered locally
+4. IP address to forward requests to that cant be answered locally (if
+   this is not required, set to `#` and the server will perform an
+   iterative query when needed instead of forwarding it).
 
 #### IANA Root
 
@@ -101,6 +105,23 @@ that overlap with any public domains as it can result undesired
 lookups. E.g. one possibility to avoid this is to define a `.site`
 domain and place all definitions in there.
 
+If the forwarding server is set to `#`, `bind` will use an compiled-in
+list of public root servers and attempt to perform an iterative query
+on its own instead of forwarding it.
+
+### Bespoke Options
+
+To inject options into `bind`s `options` statement set the `OPTIONS`
+environment variable. This variable is placed verbatim without any
+checks into the options statement, so its is necessary to include all
+formatting. That is, each option needs to be delimited by an `;`. For
+example:
+
+```bash
+OPTIONS="check-names master; dump-file \"/path/to/a/file\";"
+```
+
+Check the `bind` [manual][bind] for available options.
 
 ### Domain specification
 
@@ -175,6 +196,14 @@ DOMAIN_example_com="www,A,10.0.0.1"
 AUTHORITATIVE="ns,A,172.17.0.3,172.17.0.3"
 ```
 
+Or, if its desirable for the subdomain server to also perform iterative
+queries instead of forwarding them to the root server:
+
+```bash
+DOMAIN_example_com="www,A,10.0.0.1"
+AUTHORITATIVE="ns,A,172.17.0.3,#"
+```
+
 Here it defines a single host (*www*) in the domain. In addition, an
 implicit NS record `ns.example.com` is also defined that points to the
 address on `eth0` (`172.17.0.2`). The `AUTHORITATIVE` configuration
@@ -245,6 +274,20 @@ The parent server would be configured as:
 DOMAIN_site="example,NS,ns.example ns.example,A,172.17.0.2 www,A,10.0.0.2"
 AUTHORITATIVE=iana,8.8.8.8
 ```
+
+It is possible to have the parent server configurable as either root
+authority or using IANA as root with no configuration changes on
+subdomain servers. That is, the below configuration would be
+compatible with the above subdomain server:
+
+```bash
+DOMAIN_site="example,NS,ns.example ns.example,A,172.17.0.2 www,A,10.0.0.2"
+DOMAIN__="@,NS,ns.site ns.site,A,172.17.0.3"
+```
+
+## Other Bits
+
+Licensed under GPLv3. Copyright 2019. All rights reserved, Karim Kanso.
 
 [iana]: https://www.iana.org/domains/root/servers "Root Servers"
 [bind]: https://www.isc.org/downloads/bind/doc/ "BIND manual"

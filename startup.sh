@@ -32,6 +32,7 @@ options {
         pid-file "/var/run/named/named.pid";
 
         allow-recursion { 0.0.0.0/0; };
+        ${OPTIONS}
 EOF
 
 case "${AUTHORITATIVE:-self}" in
